@@ -1,0 +1,26 @@
+{
+  "name": "subprocessors-json",
+  "version": "0.1.0",
+  "description": "An open format for sub-processor lists. Parse, validate and diff subprocessors.json so any tool can watch any vendor.",
+  "license": "Apache-2.0",
+  "author": "Dekimu",
+  "repository": { "type": "git", "url": "git+https://github.com/dekimuhq/subprocessors-json.git" },
+  "keywords": ["subprocessors", "gdpr", "article-28", "dpa", "compliance", "dekimu"],
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "bin": { "subprocessors-json": "dist/cli.js" },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "SPEC.md", "subprocessors.schema.json"],
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && vitest run",
+    "gen:schema": "node scripts/gen-schema.mjs",
+    "check:schema-fresh": "npm run build && cp subprocessors.schema.json $TMPDIR/s.json && npm run gen:schema && diff -q $TMPDIR/s.json subprocessors.schema.json",
+    "prepublishOnly": "npm run build && npm run gen:schema && npm test"
+  },
+  "dependencies": { "zod": "^4.6.7" },
+  "devDependencies": { "@types/node": "^25.9.3", "typescript": "^5.6.0", "vitest": "^4.1.11" }
+}

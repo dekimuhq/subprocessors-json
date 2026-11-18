@@ -1,0 +1,16 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22 }
+      - run: npm install
+      - run: npm run build
+      - name: bin entry must start with a shebang
+        run: head -c 21 dist/cli.js | grep -q '^#!/usr/bin/env node' || { echo '::error::dist/cli.js has no shebang'; exit 1; }
+      - name: committed schema must match the zod source
+        run: npm run gen:schema && git diff --exit-code subprocessors.schema.json
+      - run: npm test
