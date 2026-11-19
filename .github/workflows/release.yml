@@ -1,0 +1,53 @@
+name: release · publish to public npm (manual dispatch)
+
+# Manual only: a first public npm publish is founder-tapped (SL-gated), so a tag
+# push must never publish by accident. Dispatch from `main` after bumping
+# package.json (this job refuses if the version is already on npm).
+#
+# Auth: GitHub gives repos created after 2026-07-15 an immutable OIDC subject and
+# npm's trusted-publishing exchange rejects it (npm/cli#9969), so this uses a
+# short-lived granular, publish-only token in NPM_BOOTSTRAP_TOKEN on the
+# `release` environment — set just before the dispatch, deleted after. Re-test
+# OIDC (empty the secret, dispatch) once #9969 closes.
+# Detail: knowledge/public-lib-embargoed-release.md § npmjs auth (monorepo).
+#
+# prepublishOnly re-runs build, schema generation and tests on the exact tree
+# being published — an npm publish is not revertible.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # provenance (Sigstore) only
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+          registry-url: "https://registry.npmjs.org"
+      - name: Token present
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: test -n "$NODE_AUTH_TOKEN" || { echo "::error::NPM_BOOTSTRAP_TOKEN is empty on the release environment"; exit 1; }
+      - name: Version must not already be on npm
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          if npm view "subprocessors-json@$PKG" version >/dev/null 2>&1; then echo "::error::subprocessors-json@$PKG already published"; exit 1; fi
+      - run: npm ci
+      - name: Publish (public, provenance)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: npm publish --access public --provenance
