@@ -2,12 +2,14 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadSnapshot } from "./fetch.js";
+import { createEgressGuard } from "./guard.js";
 import { diffSubprocessors, formatDiff, isEmptyDiff } from "./diff.js";
 
-const USAGE = "usage: subprocessors-json validate <url|file>\n       subprocessors-json diff [--json] <before url|file> <after url|file>";
+const USAGE = "usage: subprocessors-json validate <url|file>\n       subprocessors-json diff [--json] <before url|file> <after url|file>\n       subprocessors-json check-egress [--json] [--category <c>] [--allow-host <h>]... <url|file> <destination url>";
 
 export async function run(argv: string[], fetchImpl: typeof fetch = fetch): Promise<0 | 1 | 2> {
   const [cmd, ...rest] = argv;
+  if (cmd === "check-egress") return checkEgress(rest, fetchImpl);
   const json = rest.includes("--json");
   const args = rest.filter((a) => a !== "--json");
   if (cmd === "validate" && args.length === 1) {
@@ -26,6 +28,34 @@ export async function run(argv: string[], fetchImpl: typeof fetch = fetch): Prom
   }
   console.error(USAGE);
   return 2;
+}
+
+/** Exit 0 = destination allowed, 1 = denied, 2 = usage error / invalid document. */
+async function checkEgress(argv: string[], fetchImpl: typeof fetch): Promise<0 | 1 | 2> {
+  let json = false;
+  let category: string | undefined;
+  const allowHosts: string[] = [];
+  const pos: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "--json") json = true;
+    else if (a === "--category" || a === "--allow-host") {
+      const v = argv[++i];
+      if (v === undefined) { console.error(USAGE); return 2; }
+      if (a === "--category") category = v; else allowHosts.push(v);
+    } else pos.push(a);
+  }
+  if (pos.length !== 2) { console.error(USAGE); return 2; }
+  const r = await loadSnapshot(pos[0]!, fetchImpl);
+  if (!r.ok) { console.error(`INVALID: ${r.error}`); return 2; }
+  let d;
+  try {
+    const guard = createEgressGuard(r.value, { mode: "enforce", allowHosts });
+    d = guard.check(pos[1]!, category === undefined ? {} : { dataCategory: category });
+  } catch (e) { console.error(`ERROR: ${(e as Error).message}`); return 2; }
+  if (json) console.log(JSON.stringify(d.event));
+  else console.log(`${d.allowed ? "ALLOWED" : "DENIED"}: ${d.event.url_host ?? "(unparseable)"} — ${d.reason}${d.processor ? ` (${d.processor.id})` : ""}`);
+  return d.allowed ? 0 : 1;
 }
 
 function isEntryPoint(): boolean {

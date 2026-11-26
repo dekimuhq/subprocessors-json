@@ -9,6 +9,10 @@ export interface DiffResult {
 
 const FIELDS = ["name", "purpose", "category", "location", "status", "effectiveFrom", "dpaUrl"] as const;
 
+const LISTS = ["hosts", "dataCategories"] as const;
+/** Order-insensitive key for the optional list members (proposed extension). */
+const norm = (v: string[] | undefined): string | undefined => (v ? JSON.stringify([...v].sort()) : undefined);
+
 /** Compare two snapshots. Entries match on `id`; order never matters. */
 export function diffSubprocessors(before: SubprocessorsDoc, after: SubprocessorsDoc): DiffResult {
   const b = new Map(before.subprocessors.map((s) => [s.id, s]));
@@ -22,6 +26,10 @@ export function diffSubprocessors(before: SubprocessorsDoc, after: Subprocessors
     const changes: FieldChange[] = [];
     for (const f of FIELDS) {
       if (old[f] !== s[f]) changes.push({ field: f, from: old[f], to: s[f] });
+    }
+    for (const f of LISTS) {
+      const [o, n] = [norm(old[f]), norm(s[f])];
+      if (o !== n) changes.push({ field: f, from: old[f], to: s[f] });
     }
     if (changes.length) changed.push({ id: s.id, name: s.name, changes });
   }

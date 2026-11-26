@@ -88,6 +88,27 @@
           "dpaUrl": {
             "type": "string",
             "format": "uri"
+          },
+          "hosts": {
+            "minItems": 1,
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 253,
+              "pattern": "^(\\*\\.)?[^\\s/\\\\@?#%:*]+$"
+            }
+          },
+          "dataCategories": {
+            "minItems": 1,
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 60
+            }
           }
         },
         "required": [

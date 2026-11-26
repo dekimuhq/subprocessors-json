@@ -29,4 +29,13 @@ describe("diff", () => {
     const b = base(); delete b.subprocessors[0]!.dpaUrl;
     expect(diffSubprocessors(base(), b).changed[0]!.changes[0]!.field).toBe("dpaUrl");
   });
+  it("hosts / dataCategories (proposed extension): change detected, order ignored", () => {
+    const a = base(); a.subprocessors[0]!.hosts = ["a.example", "b.example"];
+    const same = base(); same.subprocessors[0]!.hosts = ["b.example", "a.example"];
+    expect(isEmptyDiff(diffSubprocessors(a, same))).toBe(true);
+    const b = base(); b.subprocessors[0]!.hosts = ["a.example", "evil.example"];
+    expect(diffSubprocessors(a, b).changed[0]!.changes[0]!.field).toBe("hosts");
+    const c = base(); c.subprocessors[0]!.dataCategories = ["email-address"];
+    expect(diffSubprocessors(base(), c).changed[0]!.changes[0]!.field).toBe("dataCategories");
+  });
 });
