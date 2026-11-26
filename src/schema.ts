@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseHostPattern } from "./hosts.js";
 
 export const FORMAT = "subprocessors-json/1" as const;
 
@@ -16,6 +17,18 @@ const isoDate = z
 
 const httpsUrl = z.url({ protocol: /^https?$/ });
 
+/**
+ * Proposed additive extension (informative; see SPEC.md "Proposed additive extension").
+ * An exact hostname or `*.suffix` (>= 2 labels after the `*.`). The regex is the
+ * JSON Schema approximation; the refine is the authoritative check.
+ */
+const hostPattern = z
+  .string()
+  .min(1)
+  .max(253)
+  .regex(/^(\*\.)?[^\s/\\@?#%:*]+$/, "must be a hostname or *.suffix, no scheme/port/path")
+  .refine((v) => parseHostPattern(v) !== null, "must be an exact hostname or *.suffix (>= 2 labels), not an IP literal");
+
 export const subprocessorSchema = z.strictObject({
   /** Stable identifier. Never reused; `diff` matches entries on it. */
   id: z.string().min(1).max(120),
@@ -29,6 +42,10 @@ export const subprocessorSchema = z.strictObject({
   /** Date the vendor starts (scheduled) or started (active). */
   effectiveFrom: isoDate.optional(),
   dpaUrl: httpsUrl.optional(),
+  /** Proposed extension: hostnames this vendor is reached on (exact or `*.suffix`). Absent = not declared. */
+  hosts: z.array(hostPattern).min(1).max(100).optional(),
+  /** Proposed extension: data categories the vendor may receive (free-text tags). Absent = unrestricted. */
+  dataCategories: z.array(z.string().trim().min(1).max(60)).min(1).max(50).optional(),
 });
 
 export const signatureSchema = z.strictObject({
