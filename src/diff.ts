@@ -1,3 +1,4 @@
+import { normalizeHost } from "./hosts.js";
 import type { Subprocessor, SubprocessorsDoc } from "./schema.js";
 
 export interface FieldChange { field: string; from: unknown; to: unknown }
@@ -10,8 +11,12 @@ export interface DiffResult {
 const FIELDS = ["name", "purpose", "category", "location", "status", "effectiveFrom", "dpaUrl"] as const;
 
 const LISTS = ["hosts", "dataCategories"] as const;
-/** Order-insensitive key for the optional list members (proposed extension). */
-const norm = (v: string[] | undefined): string | undefined => (v ? JSON.stringify([...v].sort()) : undefined);
+/** Order/case/punycode-insensitive key for the optional list members (proposed extension). */
+const canonHost = (h: string): string =>
+  h.startsWith("*.") ? `*.${normalizeHost(h.slice(2)) ?? h.slice(2)}` : normalizeHost(h) ?? h;
+const norm = (v: string[] | undefined, f: (s: string) => string): string | undefined =>
+  v ? JSON.stringify([...new Set(v.map(f))].sort()) : undefined;
+const CANON = { hosts: canonHost, dataCategories: (c: string) => c.trim().toLowerCase() } as const;
 
 /** Compare two snapshots. Entries match on `id`; order never matters. */
 export function diffSubprocessors(before: SubprocessorsDoc, after: SubprocessorsDoc): DiffResult {
@@ -28,7 +33,7 @@ export function diffSubprocessors(before: SubprocessorsDoc, after: Subprocessors
       if (old[f] !== s[f]) changes.push({ field: f, from: old[f], to: s[f] });
     }
     for (const f of LISTS) {
-      const [o, n] = [norm(old[f]), norm(s[f])];
+      const [o, n] = [norm(old[f], CANON[f]), norm(s[f], CANON[f])];
       if (o !== n) changes.push({ field: f, from: old[f], to: s[f] });
     }
     if (changes.length) changed.push({ id: s.id, name: s.name, changes });

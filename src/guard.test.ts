@@ -6,7 +6,7 @@ import { base } from "./test-helpers.js";
 const doc = (): SubprocessorsDoc => {
   const d = base();
   d.subprocessors = [
-    { id: "vercel", name: "Vercel", purpose: "Hosting", category: "hosting", location: "EU", status: "active", hosts: ["vercel.com", "*.vercel.app"] },
+    { id: "vercel", name: "Vercel", purpose: "Hosting", category: "hosting", location: "EU", status: "active", hosts: ["vercel.com", "*.cdn.vercel.com"] },
     { id: "resend", name: "Resend", purpose: "Email", category: "email", location: "EU", status: "active", hosts: ["api.resend.com"], dataCategories: ["email-address", "message-content"] },
     { id: "future", name: "Future", purpose: "Later", category: "ai", location: "EU", status: "scheduled", effectiveFrom: "2027-01-01", hosts: ["api.future.example"] },
     { id: "nohosts", name: "NoHosts", purpose: "x", category: "other", location: "EU", status: "active" },
@@ -47,12 +47,12 @@ describe("host matching", () => {
   it("allows exact and wildcard hosts, attributes the processor", () => {
     const { g } = mk();
     expect(g.check("https://vercel.com/x")).toMatchObject({ allowed: true, processor: { id: "vercel" }, reason: "processor" });
-    expect(g.check("https://app.vercel.app/")).toMatchObject({ allowed: true, processor: { id: "vercel" } });
-    expect(g.check("https://a.b.vercel.app/")).toMatchObject({ allowed: true });
+    expect(g.check("https://app.cdn.vercel.com/")).toMatchObject({ allowed: true, processor: { id: "vercel" } });
+    expect(g.check("https://a.b.cdn.vercel.com/")).toMatchObject({ allowed: true });
   });
   it("wildcard does NOT match the apex; apex needs its own entry", () => {
     const { g } = mk();
-    expect(g.check("https://vercel.app/").allowed).toBe(false);
+    expect(g.check("https://cdn.vercel.com/").allowed).toBe(false);
     expect(g.check("https://vercel.com/").allowed).toBe(true); // listed exactly
     expect(g.check("https://www.vercel.com/").allowed).toBe(false); // exact does not cover subdomains
   });
@@ -74,8 +74,8 @@ describe("host matching", () => {
     ["query trick", "https://evil.com/?h=vercel.com"],
     ["fragment trick", "https://evil.com/#@vercel.com"],
     ["prefix label", "https://evilvercel.com/"],
-    ["suffix without dot", "https://evilvercel.app/"],
-    ["wildcard w/o dot boundary", "https://xvercel.app/"],
+    ["suffix without dot", "https://evilcdn.vercel.com/"],
+    ["wildcard w/o dot boundary", "https://xcdn.vercel.com/"],
     ["port trick", "https://vercel.com:443.evil.com/"],
     ["IPv4 literal", "https://127.0.0.1/"],
     ["IPv4 hex/decimal form", "https://0x7f.1/"],
@@ -84,7 +84,7 @@ describe("host matching", () => {
     ["IPv6 mapped", "https://[::ffff:127.0.0.1]/"],
     ["localhost", "http://localhost/"],
     ["localhost with port", "http://localhost:3000/"],
-    ["empty label wildcard", "https://a..vercel.app/"],
+    ["empty label wildcard", "https://a..cdn.vercel.com/"],
     ["percent-encoded dot", "https://vercel%2ecom.evil.com/"],
     ["unlisted", "https://example.org/"],
     ["processor without hosts", "https://nohosts.example/"],
@@ -314,5 +314,134 @@ describe("guarded fetch", () => {
     const { g } = mk();
     const f = g.fetch((async () => ok()) as typeof fetch, { dataCategory: "payment-card" });
     await expect(f("https://api.resend.com/")).rejects.toBeInstanceOf(EgressDenied);
+  });
+});
+
+describe("review fixes", () => {
+  const docWith = (hosts: string[]) => { const d = doc(); d.subprocessors[0]!.hosts = hosts; return d; };
+
+  it("W1: https -> http redirect on the SAME host is denied in enforce mode, before the cleartext request", async () => {
+    const { g, events } = mk();
+    const calls: string[] = [];
+    const f = g.fetch((async (u: unknown) => { calls.push(String(u)); return redirect("http://vercel.com/x"); }) as typeof fetch);
+    const err = await f("https://vercel.com/", { headers: { authorization: "Bearer t" } }).catch((e) => e);
+    expect(err).toBeInstanceOf(EgressDenied);
+    expect(err.event.reason).toBe("denied:downgrade");
+    expect(calls).toEqual(["https://vercel.com/"]);
+    expect(events.at(-1)).toMatchObject({ allowed: false, reason: "denied:downgrade" });
+  });
+  it("W1: report mode reports the downgrade, follows, and strips auth headers (origin changed)", async () => {
+    const { g, events } = mk({ mode: "report" });
+    const seen: RequestInit[] = [];
+    const f = g.fetch((async (_u: unknown, init?: RequestInit) => { seen.push(init!); return seen.length === 1 ? redirect("http://vercel.com/x") : ok(); }) as typeof fetch);
+    await f("https://vercel.com/", { headers: { authorization: "Bearer t", cookie: "a=b" } });
+    expect(events.at(-1)).toMatchObject({ allowed: false, reason: "denied:downgrade", mode: "report" });
+    const h = new Headers(seen[1]!.headers);
+    expect(h.get("authorization")).toBeNull();
+    expect(h.get("cookie")).toBeNull();
+  });
+  it("W1: same host, different port = different origin: credentials dropped", async () => {
+    const { g } = mk();
+    const seen: RequestInit[] = [];
+    const f = g.fetch((async (_u: unknown, init?: RequestInit) => { seen.push(init!); return seen.length === 1 ? redirect("https://vercel.com:8443/") : ok(); }) as typeof fetch);
+    await f("https://vercel.com/", { headers: { authorization: "Bearer t", "x-api-key": "k", "api-key": "k2", "x-vendor-token": "v", "x-keep": "1" } });
+    const h = new Headers(seen[1]!.headers);
+    for (const n of ["authorization", "x-api-key", "api-key"]) expect(h.get(n), n).toBeNull();
+    expect(h.get("x-vendor-token")).toBe("v");
+    expect(h.get("x-keep")).toBe("1");
+  });
+  it("same origin keeps headers", async () => {
+    const { g } = mk();
+    const seen: RequestInit[] = [];
+    const f = g.fetch((async (_u: unknown, init?: RequestInit) => { seen.push(init!); return seen.length === 1 ? redirect("/b") : ok(); }) as typeof fetch);
+    await f("https://vercel.com/a", { headers: { authorization: "Bearer t" } });
+    expect(new Headers(seen[1]!.headers).get("authorization")).toBe("Bearer t");
+  });
+  it("nit: stripHeadersOnRedirect adds extra vendor headers", async () => {
+    const { g } = mk({ stripHeadersOnRedirect: ["X-Vendor-Token"] });
+    const seen: RequestInit[] = [];
+    const f = g.fetch((async (_u: unknown, init?: RequestInit) => { seen.push(init!); return seen.length === 1 ? redirect("https://api.resend.com/") : ok(); }) as typeof fetch);
+    await f("https://vercel.com/", { headers: { "x-vendor-token": "v", "x-keep": "1" } });
+    const h = new Headers(seen[1]!.headers);
+    expect(h.get("x-vendor-token")).toBeNull();
+    expect(h.get("x-keep")).toBe("1");
+  });
+
+  describe("W2: wildcard over a shared suffix", () => {
+    it.each([
+      "*.vercel.app", "*.github.io", "*.pages.dev", "*.workers.dev", "*.netlify.app", "*.herokuapp.com", "*.s3.amazonaws.com",
+      "*.cloudfront.net", "*.blob.core.windows.net", "*.web.app", "*.run.app", "*.fly.dev", "*.ngrok-free.app", "*.co.uk",
+      "*.com.au", "*.execute-api.eu-west-1.amazonaws.com", "*.s3.eu-west-1.amazonaws.com", "*.Vercel.App",
+    ])("guard creation throws for %s", (h) => {
+      expect(() => createEgressGuard(docWith([h]), { mode: "enforce" })).toThrow(/shared suffix/);
+    });
+    it("the document itself still validates (the refusal is the guard's, an explicit opt-out exists)", () => {
+      expect(parseSubprocessors(docWith(["*.vercel.app"])).ok).toBe(true);
+    });
+    it("allowSharedSuffix: true accepts it, knowingly", () => {
+      const g = createEgressGuard(docWith(["*.vercel.app"]), { mode: "enforce", allowSharedSuffix: true });
+      expect(g.check("https://exfil-attacker.vercel.app/").allowed).toBe(true);
+    });
+    it("a tenant-specific wildcard is fine; allowHosts is held to the same rule", () => {
+      expect(() => createEgressGuard(docWith(["*.mytenant.vercel.app"]), { mode: "enforce" })).not.toThrow();
+      expect(() => createEgressGuard(doc(), { mode: "enforce", allowHosts: ["*.github.io"] })).toThrow(/shared suffix/);
+      expect(() => createEgressGuard(doc(), { mode: "enforce", allowHosts: ["*.github.io"], allowSharedSuffix: true })).not.toThrow();
+    });
+  });
+
+  describe("W3: localhost", () => {
+    it.each([["localhost"], ["*.x.localhost"], ["a.localhost"]])("vendor host %j is rejected by the schema", (h) => {
+      expect(parseSubprocessors(docWith([h])).ok).toBe(false);
+    });
+    it("localhost names are denied unless in allowHosts, with their own reason", () => {
+      const { g } = mk();
+      expect(g.check("http://localhost/")).toMatchObject({ allowed: false, reason: "denied:localhost" });
+      expect(g.check("http://foo.localhost/").reason).toBe("denied:localhost");
+      const g2 = createEgressGuard(doc(), { mode: "enforce", allowHosts: ["localhost", "*.x.localhost"] });
+      expect(g2.check("http://localhost:3000/").allowed).toBe(true);
+      expect(g2.check("http://a.x.localhost/").allowed).toBe(true);
+      expect(g2.check("http://b.localhost/").allowed).toBe(false);
+    });
+  });
+
+  it("W8: realFetch receives the checked, normalised href for string and URL input", async () => {
+    const { g } = mk();
+    const targets: unknown[] = [];
+    const f = g.fetch((async (u: unknown) => { targets.push(u); return ok(); }) as typeof fetch);
+    await f("HTTPS://VERCEL.COM./a b");
+    await f(new URL("https://VERCEL.com/x"));
+    expect(targets).toEqual(["https://vercel.com./a%20b", "https://vercel.com/x"]);
+  });
+  it("W8: report mode passes unparseable input through unchanged", async () => {
+    const { g } = mk({ mode: "report" });
+    const targets: unknown[] = [];
+    const f = g.fetch((async (u: unknown) => { targets.push(u); return ok(); }) as typeof fetch);
+    await f("not a url");
+    expect(targets).toEqual(["not a url"]);
+  });
+
+  it.each([[NaN], [-1], [21], [1.5], [Infinity]])("nit: maxRedirects %s is rejected", (n) => {
+    expect(() => createEgressGuard(doc(), { mode: "enforce", maxRedirects: n })).toThrow(/maxRedirects/);
+  });
+  it("nit: maxRedirects 0 allows none", async () => {
+    const { g } = mk({ maxRedirects: 0 });
+    const f = g.fetch((async () => redirect("https://vercel.com/b")) as typeof fetch);
+    await expect(f("https://vercel.com/")).rejects.toThrow(/too many redirects/);
+  });
+  it("nit: a Request's redirect mode and signal carry into later hops", async () => {
+    const { g } = mk();
+    const seen: RequestInit[] = [];
+    const ac = new AbortController();
+    const f = g.fetch((async (_u: unknown, init?: RequestInit) => { seen.push(init!); return seen.length === 1 ? redirect("/b") : ok(); }) as typeof fetch);
+    await f(new Request("https://vercel.com/a", { signal: ac.signal }));
+    expect(seen[1]!.signal).toBeInstanceOf(AbortSignal);
+    ac.abort();
+    expect(seen[1]!.signal!.aborted).toBe(true);
+    const g2 = mk().g.fetch((async () => redirect("https://evil.com/")) as typeof fetch);
+    const r = await g2(new Request("https://vercel.com/a", { redirect: "manual" }));
+    expect(r.status).toBe(302);
+  });
+  it("requireCategory default is off (documented trade-off)", () => {
+    expect(mk().g.check("https://api.resend.com/").allowed).toBe(true);
   });
 });

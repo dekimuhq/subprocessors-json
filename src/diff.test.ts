@@ -38,4 +38,13 @@ describe("diff", () => {
     const c = base(); c.subprocessors[0]!.dataCategories = ["email-address"];
     expect(diffSubprocessors(base(), c).changed[0]!.changes[0]!.field).toBe("dataCategories");
   });
+  it("hosts are compared normalised (case, trailing dot, punycode, duplicates); categories case-insensitively", () => {
+    const a = base(); a.subprocessors[0]!.hosts = ["xn--mnchen-3ya.example", "*.Api.example"];
+    const b = base(); b.subprocessors[0]!.hosts = ["MÜNCHEN.example.", "*.api.example", "*.api.EXAMPLE"];
+    expect(isEmptyDiff(diffSubprocessors(a, b))).toBe(true);
+    a.subprocessors[0]!.dataCategories = ["Email-Address"]; b.subprocessors[0]!.dataCategories = [" email-address "];
+    expect(isEmptyDiff(diffSubprocessors(a, b))).toBe(true);
+    b.subprocessors[0]!.hosts = ["other.example"];
+    expect(isEmptyDiff(diffSubprocessors(a, b))).toBe(false);
+  });
 });
